@@ -14,6 +14,8 @@ import pyautogui
 import keyboard
 import threading
 
+pyautogui.PAUSE = 0
+
 class AutoClickerSignals(QObject):
     update_stats = pyqtSignal(str, int, int, int)
     status_changed = pyqtSignal(str, str)
@@ -275,6 +277,7 @@ class ModernAutoClicker(QMainWindow):
         
         self.current_hotkey = "f6"
         self.listening_for_hotkey = False
+        self.last_toggle_time = 0
         
         main_layout.addLayout(header_layout)
         
@@ -667,12 +670,7 @@ class ModernAutoClicker(QMainWindow):
         
         clicks = {"Single": 1, "Double": 2, "Triple": 3}[self.type_combo.currentText()]
         button = self.button_combo.currentText().lower()
-        
-        # Use _pyautogui_x11 to minimize delay if available, otherwise set pause to 0
-        old_pause = pyautogui.PAUSE
-        pyautogui.PAUSE = 0
         pyautogui.click(button=button, clicks=clicks)
-        pyautogui.PAUSE = old_pause
         
         now = time.time()
         for _ in range(clicks):
@@ -683,14 +681,11 @@ class ModernAutoClicker(QMainWindow):
     def loop(self):
         self.start_time = time.time()
         is_burst = self.burst_radio.isChecked()
-        
-        # For precise timing in CPS mode
-        next_click_time = time.time()
+        is_cps_mode = self.cps_mode_radio.isChecked()
         
         while self.running:
             if self.paused:
                 time.sleep(0.05)
-                next_click_time = time.time()  # Reset timing when unpaused
                 continue
             
             # Check repeat limit
@@ -720,26 +715,13 @@ class ModernAutoClicker(QMainWindow):
                 self.cycles_count += 1
                 time.sleep(burst_delay)
             else:
-                # Continuous mode - use precise timing
-                current_time = time.time()
+                # Continuous mode - use calculated interval
+                self.click()
+                self.cycles_count += 1
                 
-                # If we're behind schedule, click immediately
-                if current_time >= next_click_time:
-                    self.click()
-                    self.cycles_count += 1
-                    
-                    # Calculate next click time
-                    interval = self.get_interval()
-                    next_click_time += interval
-                    
-                    # If we've fallen too far behind, reset to current time
-                    if next_click_time < current_time - 1:
-                        next_click_time = current_time + interval
-                else:
-                    # Wait until next click time
-                    sleep_time = next_click_time - current_time
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
+                # Get interval based on current mode
+                interval = self.get_interval()
+                time.sleep(interval)
         
         if self.running:
             self.stop()
@@ -860,9 +842,8 @@ class ModernAutoClicker(QMainWindow):
                     return
                 
                 # Update hotkey
-                keyboard.unhook_all()
                 self.current_hotkey = new_key
-                keyboard.add_hotkey(new_key, self.toggle)
+                self.setup_hotkey()  # Re-setup with new key
                 
                 # Update label
                 display_name = new_key.upper()
@@ -883,7 +864,16 @@ class ModernAutoClicker(QMainWindow):
     
     def setup_hotkey(self):
         keyboard.unhook_all()
-        keyboard.add_hotkey(self.current_hotkey, self.toggle)
+        
+        def on_key_event(event):
+            if event.event_type == "down" and event.name.lower() == self.current_hotkey:
+                # Debounce: prevent multiple triggers within 0.3 seconds
+                current_time = time.time()
+                if current_time - self.last_toggle_time >= 0.3:
+                    self.last_toggle_time = current_time
+                    self.toggle()
+        
+        keyboard.hook(on_key_event)
     
     def toggle(self):
         if not self.running:
